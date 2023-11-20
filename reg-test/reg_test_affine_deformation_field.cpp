@@ -1,130 +1,266 @@
-#include "_reg_ReadWriteImage.h"
 #include "_reg_ReadWriteMatrix.h"
-#include "_reg_globalTrans.h"
 #include "_reg_tools.h"
 
 #include "Kernel.h"
 #include "AffineDeformationFieldKernel.h"
 #include "Platform.h"
 
+#include <catch2/catch_test_macros.hpp>
+
 #include "AladinContent.h"
 #ifdef _USE_CUDA
 #include "CUDAAladinContent.h"
 #endif
-
 #ifdef _USE_OPENCL
 #include "CLAladinContent.h"
 #endif
 
-#define EPS 0.000001
 #define EPS_SINGLE 0.0001
 
-void test(AladinContent *con, int platformCode) {
+/*
+    This test file contains the following unit tests:
+    test function: creation of a deformation field from an affine matrix
+    In 2D and 3D
+    identity
+    translation
+    affine
+*/
 
-    Platform *platform = new Platform(platformCode);
 
-    Kernel *affineDeformKernel = platform->createKernel(AffineDeformationFieldKernel::getName(), con);
-    affineDeformKernel->castTo<AffineDeformationFieldKernel>()->calculate();
+typedef std::tuple<std::string, nifti_image *, mat44 *, float *, float *, float *> test_data;
+typedef std::tuple<AladinContent *, std::string, int> content_desc;
 
-    delete affineDeformKernel;
-    delete platform;
-}
+TEST_CASE("Affine deformation field", "[AffineDefField]") {
+    // Create a reference 2D image
+    int dim[8]= {2, 2, 2, 1, 1, 1, 1, 1};
+    nifti_image *reference2D = nifti_make_new_nim(
+            dim,
+            NIFTI_TYPE_FLOAT32,
+            true);
+    reg_checkAndCorrectDimension(reference2D);
 
-int main(int argc, char **argv)
-{
-    if (argc != 5) {
-        fprintf(stderr, "Usage: %s <refImage> <inputMatrix> <expectedField> <platformCode>\n", argv[0]);
-        return EXIT_FAILURE;
+    // Create a reference 3D image
+    dim[0]= 3;
+    dim[3]= 2;
+    nifti_image *reference3D = nifti_make_new_nim(
+            dim,
+            NIFTI_TYPE_FLOAT32,
+            true);
+    reg_checkAndCorrectDimension(reference3D);
+
+    // Generate the different use cases
+    std::vector<test_data> test_use_cases;
+
+    // Identity use case - 2D
+    auto *identity = new mat44;
+    reg_mat44_eye(identity);
+    // Test order [0,0] [1,0] [0,1] [1,1]
+    float identity_result_2x[4] = {0, 1, 0, 1};
+    float identity_result_2y[4] = {0, 0, 1, 1};
+    test_use_cases.emplace_back(test_data(
+            "identity 2D",
+            reference2D,
+            identity,
+            identity_result_2x,
+            identity_result_2y,
+            nullptr)
+    );
+    // Identity use case - 3D
+    // Test order [0,0,0] [1,0,0] [0,1,0] [1,1,0],[0,0,1] [1,0,1] [0,1,1] [1,1,1] 
+    float identity_result_3x[8] = {0, 1, 0, 1, 0, 1, 0, 1};
+    float identity_result_3y[8] = {0, 0, 1, 1, 0, 0, 1, 1};
+    float identity_result_3z[8] = {0, 0, 0, 0, 1, 1, 1, 1};
+    test_use_cases.emplace_back(test_data(
+            "identity 3D",
+            reference3D,
+            identity,
+            identity_result_3x,
+            identity_result_3y,
+            identity_result_3z)
+    );
+
+    // Translation - 2D
+    auto *translation = new mat44;
+    reg_mat44_eye(translation);
+    translation->m[0][3] = -0.5;
+    translation->m[1][3] = 1.5;
+    translation->m[2][3] = 0.75;
+    // Test order [0,0] [1,0] [0,1] [1,1]
+    float translation_result_2x[4] = {-0.5, .5, -0.5, .5};
+    float translation_result_2y[4] = {1.5, 1.5, 2.5, 2.5};
+    test_use_cases.emplace_back(test_data(
+            "translation 2D",
+            reference2D,
+            translation,
+            translation_result_2x,
+            translation_result_2y,
+            nullptr)
+    );
+
+    // Translation - 3D
+    // Test order [0,0,0] [1,0,0] [0,1,0] [1,1,0],[0,0,1] [1,0,1] [0,1,1] [1,1,1] 
+    float translation_result_3x[8] = {-0.5, .5, -0.5, .5, -0.5, .5, -0.5, .5};
+    float translation_result_3y[8] = {1.5, 1.5, 2.5, 2.5, 1.5, 1.5, 2.5, 2.5};
+    float translation_result_3z[8] = {.75, .75, .75, .75, 1.75, 1.75, 1.75, 1.75};
+    test_use_cases.emplace_back(test_data(
+            "translation 3D",
+            reference3D,
+            translation,
+            translation_result_3x,
+            translation_result_3y,
+            translation_result_3z)
+    );
+
+    
+    // Full affine - 2D
+    // Test order [0,0] [1,0] [0,1] [1,1]
+    auto *affine = new mat44;
+    reg_mat44_eye(affine);
+    affine->m[0][3] = -0.5;
+    affine->m[1][3] = 1.5;
+    affine->m[2][3] = 0.75;
+    for (auto i=0; i<4; ++i){
+        for (auto j=0; j<4; ++j){
+            affine->m[i][j] +=  static_cast<float>((((float) rand() / (RAND_MAX))-.5)/10.);
+        }
     }
-
-    char *inputRefImageName = argv[1];
-    char *inputMatFileName = argv[2];
-    char *inputDefImageName = argv[3];
-    int platformCode = atoi(argv[4]);
-
-    // Read the input reference image
-    nifti_image *referenceImage = reg_io_ReadImageFile(inputRefImageName);
-    if (referenceImage == NULL) {
-        reg_print_msg_error("The input reference image could not be read");
-        return EXIT_FAILURE;
+    float affine_result_2x[4];
+    float affine_result_2y[4];
+    for (auto i=0; i<4;++i){
+        auto x = identity_result_2x[i];
+        auto y = identity_result_2y[i];
+        affine_result_2x[i] = affine->m[0][3] + affine->m[0][0]*x + affine->m[0][1]*y;
+        affine_result_2y[i] = affine->m[1][3] + affine->m[1][0]*x + affine->m[1][1]*y;
+        
     }
-    // Read the input affine matrix
-    mat44 *inputMatrix = (mat44 *)malloc(sizeof(mat44));
-    reg_tool_ReadAffineFile(inputMatrix, inputMatFileName);
-
-    // Read the input deformation field image image
-    nifti_image *inputDeformationField = reg_io_ReadImageFile(inputDefImageName);
-    if (inputDeformationField == NULL){
-        reg_print_msg_error("The input deformation field image could not be read");
-        return EXIT_FAILURE;
+    test_use_cases.emplace_back(test_data(
+            "full affine 2D",
+            reference2D,
+            affine,
+            affine_result_2x,
+            affine_result_2y,
+            nullptr)
+    );
+    // Full affine - 3D
+    // Test order [0,0,0] [1,0,0] [0,1,0] [1,1,0],[0,0,1] [1,0,1] [0,1,1] [1,1,1]
+    float affine_result_3x[8];
+    float affine_result_3y[8];
+    float affine_result_3z[8];
+    for (auto i=0; i<8;++i){
+        auto x = identity_result_3x[i];
+        auto y = identity_result_3y[i];
+        auto z = identity_result_3z[i];
+        affine_result_3x[i] = affine->m[0][3] +
+            affine->m[0][0]*x + affine->m[0][1]*y + affine->m[0][2]*z;
+        affine_result_3y[i] = affine->m[1][3] +
+            affine->m[1][0]*x + affine->m[1][1]*y + affine->m[1][2]*z;
+        affine_result_3z[i] = affine->m[2][3] +
+            affine->m[2][0]*x + affine->m[2][1]*y + affine->m[2][2]*z;        
     }
-    // Check the dimension of the input images
-    if (referenceImage->nx != inputDeformationField->nx ||
-            referenceImage->ny != inputDeformationField->ny ||
-            referenceImage->nz != inputDeformationField->nz ||
-            (referenceImage->nz > 1 ? 3 : 2) != inputDeformationField->nu){
-        reg_print_msg_error("The input reference and deformation field images do not have corresponding sizes");
-        return EXIT_FAILURE;
-    }
+    test_use_cases.emplace_back(test_data(
+            "affine 3D",
+            reference3D,
+            affine,
+            affine_result_3x,
+            affine_result_3y,
+            affine_result_3z)
+    );
 
-    // Create a deformation field
-    nifti_image *test_field = nifti_copy_nim_info(inputDeformationField);
-    test_field->data = (void *) malloc(test_field->nvox*test_field->nbyper);
+    // Loop over all generated test cases to create all content and run all tests
+    for(auto && test_use_case: test_use_cases) {
 
-    // Compute the affine deformation field
-    AladinContent *con = NULL;
-    if (platformCode == NR_PLATFORM_CPU) {
-        con = new AladinContent(referenceImage, NULL, NULL, inputMatrix, sizeof(float));
-    }
+        // Retrieve test information
+        std::string test_name;
+        nifti_image *reference;
+        mat44 *test_mat;
+        float *test_res_x;
+        float *test_res_y;
+        float *test_res_z;
+        std::tie(test_name, reference, test_mat, test_res_x, test_res_y, test_res_z) = 
+            test_use_case;
+
+        // Accumate all required contents with a vector
+        std::vector<content_desc> listContent;
+        listContent.push_back(content_desc(
+                new AladinContent(
+                        reference,
+                        nullptr,
+                        nullptr,
+                        test_mat,
+                        sizeof(float)),
+                "CPU",
+                0));
 #ifdef _USE_CUDA
-    else if (platformCode == NR_PLATFORM_CUDA) {
-        con = new CudaAladinContent(referenceImage, NULL, NULL, inputMatrix, sizeof(float));
-    }
+        listContent.push_back(content_desc(
+                new CudaAladinContent(
+                        reference,
+                        nullptr,
+                        nullptr,
+                        test_mat,
+                        sizeof(float)),
+                "CUDA",
+                1));
 #endif
 #ifdef _USE_OPENCL
-    else if (platformCode == NR_PLATFORM_CL) {
-        con = new ClAladinContent(referenceImage, NULL, NULL, inputMatrix, sizeof(float));
-    }
+        listContent.push_back(content_desc(
+                new ClAladinContent(
+                        reference,
+                        nullptr,
+                        nullptr,
+                        test_mat,
+                        sizeof(float)),
+                "OpenCL",
+                2));
 #endif
-    else {
-        reg_print_msg_error("The platform code is not suppoted");
-        return EXIT_FAILURE;
+        // Loop over all possibles contents for each test
+        for (auto &&content: listContent) {
+
+            AladinContent *con;
+            std::string desc;
+            int plat_value;
+            std::tie(con, desc, plat_value) = content;
+            SECTION(test_name + " " + desc){
+                // Initialise the platform to run current content and retrieve deformation field
+                auto *platform = new Platform(plat_value);
+                Kernel *affineDeformKernel = platform->createKernel(
+                        AffineDeformationFieldKernel::getName(),
+                        con);
+                affineDeformKernel->castTo<AffineDeformationFieldKernel>()->calculate();
+                nifti_image *defField =
+                        con->getCurrentDeformationField();
+
+                // Check all values
+                auto *defFieldPtrX = static_cast<float *>(defField->data);
+                auto *defFieldPtrY = &defFieldPtrX[defField->nx *
+                                                    defField->ny *
+                                                    defField->nz];
+                auto *defFieldPtrZ = &defFieldPtrY[defField->nx *
+                                                    defField->ny *
+                                                    defField->nz];
+                for (int i = 0; i < defField->nx*defField->ny*defField->nz; ++i) {
+                    REQUIRE(fabs(
+                            defFieldPtrX[i] - test_res_x[i]) <
+                            EPS_SINGLE);
+                    REQUIRE(fabs(
+                            defFieldPtrY[i] - test_res_y[i]) <
+                            EPS_SINGLE);
+                    if(test_res_z != nullptr){
+                        REQUIRE(fabs(
+                                defFieldPtrZ[i] - test_res_z[i]) <
+                                EPS_SINGLE);
+                    }
+                }
+                delete affineDeformKernel;
+                delete platform;
+                delete con;
+            }
+        }
+        listContent.clear();
     }
-    //Check if the platform used is double capable
-    bool isDouble = con->isCurrentComputationDoubleCapable();
-    double proper_eps = EPS;
-    if(isDouble == 0) {
-        proper_eps = EPS_SINGLE;
-    }
-
-    //CPU or GPU code
-    reg_tools_changeDatatype<float>(referenceImage);
-    test(con, platformCode);
-    test_field = con->getCurrentDeformationField();
-
-    // Compute the difference between the computed and inputed deformation field
-    nifti_image *diff_field = nifti_copy_nim_info(inputDeformationField);
-    diff_field->data = (void *) malloc(diff_field->nvox*diff_field->nbyper);
-    reg_tools_substractImageToImage(inputDeformationField, test_field, diff_field);
-    reg_tools_abs_image(diff_field);
-    double max_difference = reg_tools_getMaxValue(diff_field, -1);
-
-    nifti_image_free(referenceImage);
-    nifti_image_free(inputDeformationField);
-
-    delete con;
-    free(inputMatrix);
-
-    if (max_difference > proper_eps){
-        fprintf(stderr, "reg_test_affine_deformation_field error too large: %g (>%g)\n",
-                max_difference, proper_eps);
-        return EXIT_FAILURE;
-    }
-#ifndef NDEBUG
-    fprintf(stdout, "reg_test_affine_deformation_field ok: %g (<%g)\n",
-            max_difference, proper_eps);
-#endif
-
-    return EXIT_SUCCESS;
+    test_use_cases.clear();
+    nifti_image_free(reference2D);
+    nifti_image_free(reference3D);
+    free(identity);
+    free(translation);
+    free(affine);
 }
-
